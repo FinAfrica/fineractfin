@@ -1,0 +1,191 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches:
+#      - qa
+#      - master
+      - dev
+  pull_request:
+    branches:
+#      - qa
+#      - master
+      - dev
+  workflow_dispatch:
+
+env:
+  VERSION: ${{ github.sha }}
+  FINERACT_S3_ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  FINERACT_S3_SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  CONTEXT: ${{ github.workspace }}
+  REGISTRY: 719725293376.dkr.ecr.eu-central-1.amazonaws.com
+
+jobs:
+  build-and-push-to-ecr-dev:
+    runs-on: ubuntu-latest
+    environment: DEV
+    env:
+      IMAGE: awamogmbh/fineract-development
+    if: github.ref == 'refs/heads/dev'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@cd89f46ac9d01407894225f350157564c9c7cee2
+        with:
+          java-version: '17'
+          distribution: 'zulu'
+          cache: gradle
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-central-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and Push
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          ./gradlew --no-daemon --console=plain :fineract-provider:clean :fineract-provider:build :fineract-provider:jibDockerBuild -x test -x cucumber
+          docker tag fineract:latest ${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_dev
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_dev 
+
+      - name: Checkout Github
+        uses: actions/checkout@v3
+        with:
+          repository: FinAfrica/fin-app-config
+          ref: 'main'
+          token: ${{ secrets.ACCESS_TOKEN }}
+
+      - name: Deploy to DEV
+        run: |
+          yq e -i '.spec.template.spec.containers[0].image="${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_dev"' clusters/dev-eks-cluster/deploy/overlays/dev/fineract-rest/version.yml
+          echo "dev manifest file............"
+          cat clusters/dev-eks-cluster/deploy/overlays/dev/fineract-rest/version.yml
+          git config --global --add safe.directory "*"
+          git config --global user.email "it@fin.africa"
+          git config --global user.name "FINIT01"
+          git add clusters/dev-eks-cluster/deploy/overlays/dev/fineract-rest/version.yml
+          git commit -m "Updating fineract-rest image from ${{ env.VERSION }} in build ${{ github.run_number }}"
+          git push origin main
+
+#  build-and-push-to-ecr-qa:
+#    runs-on: ubuntu-latest
+#    environment: QA
+#    env:
+#      IMAGE: awamogmbh/fineract-development
+#    if: github.ref == 'refs/heads/qa'
+#
+#    steps:
+#      - name: Checkout
+#        uses: actions/checkout@v3
+#
+#      - name: Set up JDK 17
+#        uses: actions/setup-java@cd89f46ac9d01407894225f350157564c9c7cee2
+#        with:
+#          java-version: '17'
+#          distribution: 'zulu'
+#          cache: gradle
+#
+#      - name: Configure AWS credentials
+#        uses: aws-actions/configure-aws-credentials@v1
+#        with:
+#          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#          aws-region: eu-central-1
+#
+#      - name: Login to Amazon ECR
+#        id: login-ecr
+#        uses: aws-actions/amazon-ecr-login@v1
+#
+#      - name: Build and Push
+#        env:
+#          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#        run: |
+#          ./gradlew :fineract-provider:jibDockerBuild -x test
+#          docker tag fineract:latest ${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_qa
+#          docker push ${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_qa
+#
+#      - name: Checkout Github
+#        uses: actions/checkout@v3
+#        with:
+#          repository: FinAfrica/fin-app-config
+#          ref: 'main'
+#          token: ${{ secrets.ACCESS_TOKEN }}
+#
+#      - name: Deploy to QA
+#        run: |
+#          yq e -i '.spec.template.spec.containers[0].image="${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_qa"' clusters/dev-eks-cluster/deploy/overlays/qa/fineract-rest/version.yml
+#          echo "dev manifest file............"
+#          cat clusters/dev-eks-cluster/deploy/overlays/qa/fineract-rest/version.yml
+#          git config --global --add safe.directory "*"
+#          git config --global user.email "it@fin.africa"
+#          git config --global user.name "FINIT01"
+#          git add clusters/dev-eks-cluster/deploy/overlays/qa/fineract-rest/version.yml
+#          git commit -m "Updating fineract-rest image from ${{ env.VERSION }} in build ${{ github.run_number }}"
+#          git push origin main
+#
+#  build-and-push-to-ecr-prod:
+#    runs-on: ubuntu-latest
+#    environment: PROD
+#    env:
+#      IMAGE: awamogmbh/fineract-master
+#    if: github.ref == 'refs/heads/master'
+#
+#    steps:
+#      - name: Checkout
+#        uses: actions/checkout@v3
+#
+#      - name: Set up JDK 17
+#        uses: actions/setup-java@cd89f46ac9d01407894225f350157564c9c7cee2
+#        with:
+#          java-version: '17'
+#          distribution: 'zulu'
+#          cache: gradle
+#
+#      - name: Configure AWS credentials
+#        uses: aws-actions/configure-aws-credentials@v1
+#        with:
+#          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+#          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+#          aws-region: eu-central-1
+#
+#      - name: Login to Amazon ECR
+#        id: login-ecr
+#        uses: aws-actions/amazon-ecr-login@v1
+#
+#      - name: Build and Push
+#        env:
+#          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+#        run: |
+#          ./gradlew :fineract-provider:jibDockerBuild -x test
+#          docker tag fineract:latest ${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_prod
+#          docker push ${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_prod
+#
+#      - name: Checkout Github
+#        uses: actions/checkout@v3
+#        with:
+#          repository: FinAfrica/fin-app-config
+#          ref: 'main'
+#          token: ${{ secrets.ACCESS_TOKEN }}
+#
+#      - name: Deploy to PROD
+#        run: |
+#          yq e -i '.spec.template.spec.containers[0].image="${{ env.REGISTRY }}/${{ env.IMAGE }}:fineract-rest_${{ env.VERSION }}_prod"' clusters/dev-eks-cluster/deploy/overlays/prod/fineract-rest/version.yml
+#          echo "dev manifest file............"
+#          cat clusters/dev-eks-cluster/deploy/overlays/prod/fineract-rest/version.yml
+#          git config --global --add safe.directory "*"
+#          git config --global user.email "it@fin.africa"
+#          git config --global user.name "FINIT01"
+#          git add clusters/dev-eks-cluster/deploy/overlays/prod/fineract-rest/version.yml
+#          git commit -m "Updating fineract-rest image from ${{ env.VERSION }} in build ${{ github.run_number }}"
+#          git push origin main
+
